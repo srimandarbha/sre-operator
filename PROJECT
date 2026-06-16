@@ -1,0 +1,15 @@
+domain: kubevirt.io
+layout:
+- go.kubebuilder.io/v4
+projectName: sre-operator
+repo: github.com/openshift-virtualization/sre-operator
+version: "3"
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: kubevirt.io
+  group: sre
+  kind: SREPolicy
+  path: github.com/openshift-virtualization/sre-operator/api/v1alpha1
+  version: v1alpha1

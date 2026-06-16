@@ -34,6 +34,31 @@ const (
 	RemediationEvict    RemediationAction = "Evict"
 )
 
+type RunCondition string
+
+const (
+	RunOnSuccess RunCondition = "OnSuccess"
+	RunOnFailure RunCondition = "OnFailure"
+	RunAlways    RunCondition = "Always"
+)
+
+// RemediationStep defines a single action in a workflow DAG
+type RemediationStep struct {
+	// Name is the unique identifier for this step within the workflow
+	Name string `json:"name"`
+	// Action is the specific remediation to perform (e.g. Restart, CollectLogs)
+	Action RemediationAction `json:"action"`
+	// DependsOn specifies the names of steps that must succeed before this step runs
+	DependsOn []string `json:"dependsOn,omitempty"`
+	// Determines if this step runs based on the outcome of its dependencies
+	RunCondition RunCondition `json:"runCondition,omitempty"`
+}
+
+// RemediationWorkflow defines a DAG of steps to execute
+type RemediationWorkflow struct {
+	Steps []RemediationStep `json:"steps"`
+}
+
 type CheckResult struct {
 	CheckName           string            `json:"checkName"`
 	Category            CheckCategory     `json:"category"`
@@ -53,9 +78,10 @@ type CheckSpec struct {
 	Category        CheckCategory     `json:"category"`
 	Enabled         bool              `json:"enabled"`
 	Severity        SeverityLevel     `json:"severity"`
-	Remediation     RemediationAction `json:"remediation"`
-	RunbookURL      string            `json:"runbookUrl,omitempty"`
-	IntervalSeconds int32             `json:"intervalSeconds,omitempty"`
+	Remediation         RemediationAction    `json:"remediation,omitempty"`
+	RemediationWorkflow *RemediationWorkflow `json:"remediationWorkflow,omitempty"`
+	RunbookURL          string               `json:"runbookUrl,omitempty"`
+	IntervalSeconds     int32                `json:"intervalSeconds,omitempty"`
 }
 
 type LogCollectionSpec struct {
@@ -87,8 +113,9 @@ type AlertTrigger struct {
 	Name                     string            `json:"name"`
 	AlertName                string            `json:"alertName"`
 	Enabled                  bool              `json:"enabled"`
-	Remediation              RemediationAction `json:"remediation"`
-	MaxFiringDurationMinutes int32             `json:"maxFiringDurationMinutes,omitempty"`
+	Remediation              RemediationAction    `json:"remediation,omitempty"`
+	RemediationWorkflow      *RemediationWorkflow `json:"remediationWorkflow,omitempty"`
+	MaxFiringDurationMinutes int32                `json:"maxFiringDurationMinutes,omitempty"`
 	CollectLogs              bool              `json:"collectLogs,omitempty"`
 	CollectOCPClusterState   bool              `json:"collectOCPClusterState,omitempty"`
 	RunbookURL               string            `json:"runbookUrl,omitempty"`
@@ -132,8 +159,36 @@ type SREPolicySpec struct {
 	Notifications    *NotificationsSpec `json:"notifications,omitempty"`
 }
 
+type StepState string
+
+const (
+	StepPending   StepState = "Pending"
+	StepRunning   StepState = "Running"
+	StepSucceeded StepState = "Succeeded"
+	StepFailed    StepState = "Failed"
+	StepSkipped   StepState = "Skipped"
+)
+
+type WorkflowStepStatus struct {
+	Name       string       `json:"name"`
+	State      StepState    `json:"state"`
+	Message    string       `json:"message,omitempty"`
+	StartTime  *metav1.Time `json:"startTime,omitempty"`
+	FinishTime *metav1.Time `json:"finishTime,omitempty"`
+}
+
+type WorkflowExecutionStatus struct {
+	ID             string               `json:"id"`
+	WorkflowName   string               `json:"workflowName"`
+	TargetResource string               `json:"targetResource"`
+	State          StepState            `json:"state"`
+	Steps          []WorkflowStepStatus `json:"steps,omitempty"`
+	StartTime      *metav1.Time         `json:"startTime,omitempty"`
+}
+
 type SREPolicyStatus struct {
-	Findings                []CheckResult      `json:"findings,omitempty"`
+	Findings                []CheckResult             `json:"findings,omitempty"`
+	ActiveWorkflows         []WorkflowExecutionStatus `json:"activeWorkflows,omitempty"`
 	LastScanTime            *metav1.Time       `json:"lastScanTime,omitempty"`
 	NextScanTime            *metav1.Time       `json:"nextScanTime,omitempty"`
 	TotalChecks             int32              `json:"totalChecks,omitempty"`
