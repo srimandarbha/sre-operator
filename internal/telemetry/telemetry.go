@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/attribute"
 
 	srev1alpha1 "github.com/openshift-virtualization/sre-operator/api/v1alpha1"
 )
@@ -15,18 +16,16 @@ func NewProvider(ctx context.Context, spec srev1alpha1.OpenTelemetrySpec) (*Prov
 	return &Provider{}, nil
 }
 
-type dummyTracer struct{}
-type dummySpan struct{}
+type dummyTracer struct{
+	trace.Tracer
+}
+type dummySpan struct{
+	trace.Span
+}
 
 func (d *dummySpan) End(options ...trace.SpanEndOption) {}
-func (d *dummySpan) AddEvent(name string, options ...trace.EventOption) {}
-func (d *dummySpan) IsRecording() bool { return false }
 func (d *dummySpan) RecordError(err error, options ...trace.EventOption) {}
-func (d *dummySpan) SpanContext() trace.SpanContext { return trace.SpanContext{} }
-func (d *dummySpan) SetStatus(code trace.Status, description string) {}
-func (d *dummySpan) SetName(name string) {}
-func (d *dummySpan) SetAttributes(kv ...trace.KeyValue) {}
-func (d *dummySpan) TracerProvider() trace.TracerProvider { return nil }
+func (d *dummySpan) SetAttributes(kv ...attribute.KeyValue) {}
 
 func (t *dummyTracer) Start(ctx context.Context, spanName string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	return ctx, &dummySpan{}

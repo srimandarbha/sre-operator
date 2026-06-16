@@ -63,7 +63,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.SREPolicyReconciler{
+	if err = (&controllers.SREPolicyReconciler{
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
 		Recorder:   mgr.GetEventRecorderFor("srepolicy-controller"),
