@@ -35,12 +35,47 @@ func (e *Engine) Apply(ctx context.Context, f *srev1alpha1.CheckResult, spec sre
 	if spec.RemediationWorkflow != nil && len(spec.RemediationWorkflow.Steps) > 0 {
 		return srev1alpha1.RemediationNone, fmt.Errorf("use WorkflowRunner for DAGs")
 	}
-	return e.executeAction(ctx, f, spec.Remediation)
+	// Fallback for legacy single action
+	dummyStep := srev1alpha1.RemediationStep{
+		Action: spec.Remediation,
+	}
+	err := e.executeStep(ctx, f, dummyStep)
+	return spec.Remediation, err
 }
 
-func (e *Engine) executeAction(ctx context.Context, f *srev1alpha1.CheckResult, action srev1alpha1.RemediationAction) (srev1alpha1.RemediationAction, error) {
-	// TODO: implement actual actions (Restart, Evict, etc.) using e.client
-	return action, nil
+func (e *Engine) executeStep(ctx context.Context, f *srev1alpha1.CheckResult, step srev1alpha1.RemediationStep) error {
+	switch step.Action {
+	case srev1alpha1.ActionDiagnoseLogs:
+		pattern := step.Arguments["pattern"]
+		if pattern == "" {
+			return fmt.Errorf("missing 'pattern' argument for DiagnoseLogs")
+		}
+		// TODO: Implement actual pod log streaming and pattern matching
+		return nil
+
+	case srev1alpha1.ActionRemediatePatchResource:
+		patchType := step.Arguments["patchType"]
+		patchBody := step.Arguments["patchBody"]
+		if patchType == "" || patchBody == "" {
+			return fmt.Errorf("missing 'patchType' or 'patchBody' argument")
+		}
+		// TODO: Implement actual client.Patch
+		return nil
+
+	case srev1alpha1.ActionRemediateVirtctlAction:
+		command := step.Arguments["command"]
+		if command == "" {
+			return fmt.Errorf("missing 'command' argument")
+		}
+		// TODO: Implement actual virtctl equivalent execution
+		return nil
+		
+	// Add other new reusable actions here...
+	
+	default:
+		// Fallback for generic actions (Restart, Evict, etc.)
+		return nil
+	}
 }
 
 type AlertDispatcher struct {
@@ -183,7 +218,7 @@ func (r *WorkflowRunner) Run(ctx context.Context, f *srev1alpha1.CheckResult, wo
 		if shouldRun {
 			// Execute
 			setStepStatus(step.Name, srev1alpha1.StepRunning, "")
-			_, actionErr := r.engine.executeAction(ctx, f, step.Action)
+			actionErr := r.engine.executeStep(ctx, f, step)
 			
 			// Normally execution might be asynchronous, but for simplicity here we assume synchronous.
 			// In a real operator, this might check external state.

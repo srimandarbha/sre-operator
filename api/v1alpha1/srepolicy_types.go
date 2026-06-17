@@ -31,7 +31,21 @@ const (
 	RemediationRestart  RemediationAction = "Restart"
 	RemediationMigrate  RemediationAction = "Migrate"
 	RemediationDrain    RemediationAction = "Drain"
+	RemediationScale    RemediationAction = "Scale"
 	RemediationEvict    RemediationAction = "Evict"
+	
+	// New Reusable Library Actions
+	ActionDiagnoseLogs           RemediationAction = "DiagnoseLogs"
+	ActionDiagnoseResourceStatus RemediationAction = "DiagnoseResourceStatus"
+	ActionDiagnoseExecCommand    RemediationAction = "DiagnoseExecCommand"
+	ActionDiagnoseNodeJournal    RemediationAction = "DiagnoseNodeJournal"
+	ActionDiagnosePrometheus     RemediationAction = "DiagnosePrometheusQuery"
+	
+	ActionRemediateDeleteResource  RemediationAction = "RemediateDeleteResource"
+	ActionRemediatePatchResource   RemediationAction = "RemediatePatchResource"
+	ActionRemediateScaleDeployment RemediationAction = "RemediateScaleDeployment"
+	ActionRemediateVirtctlAction   RemediationAction = "RemediateVirtctlAction"
+	ActionRemediateNodeSystemctl   RemediationAction = "RemediateNodeSystemctl"
 )
 
 type RunCondition string
@@ -52,6 +66,8 @@ type RemediationStep struct {
 	DependsOn []string `json:"dependsOn,omitempty"`
 	// Determines if this step runs based on the outcome of its dependencies
 	RunCondition RunCondition `json:"runCondition,omitempty"`
+	// Arguments passes dynamic parameters to the action (e.g. pattern="error")
+	Arguments map[string]string `json:"arguments,omitempty"`
 }
 
 // RemediationWorkflow defines a DAG of steps to execute
