@@ -527,6 +527,19 @@ func (r *SREPolicyReconciler) runLogCollection(
 			}
 		}
 		policy.Status.LogDiagnosticsConfigMap = fmt.Sprintf("%s/%s", policy.Namespace, logDiagnosticsConfigMap)
+		
+		// Attach the summary to the current OpenTelemetry span
+		span := trace.SpanFromContext(ctx)
+		if span.IsRecording() {
+			// Cap the summary length to prevent exceeding OTel attribute limits
+			cappedSummary := summary
+			if len(cappedSummary) > 4000 {
+				cappedSummary = cappedSummary[:4000] + "\n...[truncated for OTel limits]"
+			}
+			span.AddEvent("LogCollectionSummary", trace.WithAttributes(
+				attribute.String("log.summary", cappedSummary),
+			))
+		}
 	}
 
 	return collection.ToCheckResults("log-collection")
