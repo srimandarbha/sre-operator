@@ -4,6 +4,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -108,28 +110,39 @@ func (r *SREPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	)
 	defer span.End()
 
+	// ── 0. Fetch Global Config ────────────────────────────────────────────────
+	globalConfig := &srev1alpha1.SREGlobalConfig{}
+	hasGlobalConfig := false
+	if err := r.Get(ctx, client.ObjectKey{Name: "sre-global-config"}, globalConfig); err == nil {
+		hasGlobalConfig = true
+	} else if !errors.IsNotFound(err) {
+		logger.Error(err, "Failed to fetch SREGlobalConfig")
+	}
+
 	// Re-init OTel only when the endpoint changes, not every cycle.
-	// The original code called NewProvider (which dials a new gRPC connection)
-	// on every reconcile, leaking the old connection and its goroutines.
-	if policy.Spec.OpenTelemetry != nil && policy.Spec.OpenTelemetry.Enabled {
-		if policy.Spec.OpenTelemetry.Endpoint != r.lastOTelEndpoint {
-			if err := r.reconcileOTel(ctx, policy); err != nil {
-				logger.Error(err, "OTel init failed — continuing without telemetry export")
+	if hasGlobalConfig && globalConfig.Spec.Observability != nil && (globalConfig.Spec.Observability.TracingEnabled || globalConfig.Spec.Observability.MetricsEnabled || globalConfig.Spec.Observability.LogsEnabled) {
+		if globalConfig.Spec.Observability.OTelEndpoint != r.lastOTelEndpoint {
+			if err := r.reconcileOTel(ctx, globalConfig); err != nil {
+				logger.Error(err, "Observability init failed")
 				setCondition(&policy.Status, conditionTypeOTelHealthy, metav1.ConditionFalse,
-					"OTelInitFailed", err.Error())
+					"ObservabilityInitFailed", err.Error())
 			} else {
-				r.lastOTelEndpoint = policy.Spec.OpenTelemetry.Endpoint
+				r.lastOTelEndpoint = globalConfig.Spec.Observability.OTelEndpoint
 				setCondition(&policy.Status, conditionTypeOTelHealthy, metav1.ConditionTrue,
-					"OTelConnected", "OTel endpoint reachable")
+					"ObservabilityConnected", "OTel endpoint reachable")
 				reachable := true
-				policy.Status.OtelEndpointReachable = &reachable
+				policy.Status.ObservabilityEndpointReachable = &reachable
 			}
 		}
 	}
 
 	namespaces := policy.Spec.TargetNamespaces
 	if len(namespaces) == 0 {
-		namespaces = []string{""}
+		if hasGlobalConfig && globalConfig.Spec.Defaults != nil && globalConfig.Spec.Defaults.VMNamespace != "" {
+			namespaces = []string{globalConfig.Spec.Defaults.VMNamespace}
+		} else {
+			namespaces = []string{""}
+		}
 	}
 
 	scanStart := time.Now()
@@ -154,7 +167,7 @@ func (r *SREPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// ── 3. Prometheus alert triggers + raw metric queries ────────────────────
-	promFindings, alertTriggerResults, alertDispatchResults := r.runPrometheusChecks(ctx, policy, tracer)
+	promFindings, alertTriggerResults, alertDispatchResults := r.runPrometheusChecks(ctx, policy, globalConfig, hasGlobalConfig, tracer)
 	allFindings = append(allFindings, promFindings...)
 
 	// Update alert status fields
@@ -175,25 +188,38 @@ func (r *SREPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	// ── 4. Log collection ─────────────────────────────────────────────────────
-	logFindings := r.runLogCollection(ctx, policy, alertTriggerResults, tracer)
+	// ── 4. Run active log collection if enabled ──────────────────────────────
+	logFindings := r.runLogCollection(ctx, policy, globalConfig, hasGlobalConfig, alertTriggerResults, tracer)
 	allFindings = append(allFindings, logFindings...)
 
 	scanDuration := time.Since(scanStart)
 
-	// ── 5. Diagnostics report ─────────────────────────────────────────────────
+	// ── 5. Diagnostics Report & ConfigMap Rotation ────────────────────────────
 	diagAgg := diagnostics.NewAggregator(r.Client, tracer, OperatorVersion)
 	report, diagErr := diagAgg.Build(ctx, policy, allFindings, remediationCount, scanDuration)
 	if diagErr != nil {
 		logger.Error(diagErr, "Diagnostic report build failed — non-fatal")
 	} else {
+		// Restore ConfigMap persistence
 		if cmErr := diagAgg.PersistToConfigMap(ctx, report, policy.Namespace); cmErr != nil {
 			logger.V(1).Info("Diagnostic ConfigMap persist failed", "err", cmErr)
+		} else {
+			// Handle ConfigMap Rotation
+			if hasGlobalConfig && globalConfig.Spec.Retention != nil && globalConfig.Spec.Retention.MaxConfigMapCopies > 0 {
+				r.rotateConfigMaps(ctx, policy, "sre.kubevirt.io/component=diagnostics", int(globalConfig.Spec.Retention.MaxConfigMapCopies))
+			}
 		}
 		if report.OTelTraceID != "" {
 			for i := range allFindings {
 				allFindings[i].TraceID = report.OTelTraceID
 			}
+		}
+	}
+
+	// Native OTLP Log Exporting (Bypassing stdout)
+	if hasGlobalConfig && globalConfig.Spec.Observability != nil && globalConfig.Spec.Observability.LogsEnabled {
+		for _, f := range allFindings {
+			r.Telemetry.LogRecord(ctx, f)
 		}
 	}
 
@@ -368,14 +394,17 @@ func (r *SREPolicyReconciler) runOCPClusterChecks(
 func (r *SREPolicyReconciler) runPrometheusChecks(
 	ctx context.Context,
 	policy *srev1alpha1.SREPolicy,
+	globalConfig *srev1alpha1.SREGlobalConfig,
+	hasGlobalConfig bool,
 	tracer trace.Tracer,
 ) ([]srev1alpha1.CheckResult, []prometheus.AlertTriggerResult, []remediation.AlertDispatchResult) {
-	if policy.Spec.Prometheus == nil || !policy.Spec.Prometheus.Enabled {
+	if policy.Spec.Prometheus == nil || !policy.Spec.Prometheus.Enabled || !hasGlobalConfig || globalConfig.Spec.Prometheus == nil {
 		return nil, nil, nil
 	}
 
 	logger := log.FromContext(ctx)
 	promSpec := policy.Spec.Prometheus
+	globalPromSpec := globalConfig.Spec.Prometheus
 
 	ctx, span := tracer.Start(ctx, "PrometheusChecks.Run")
 	defer span.End()
@@ -383,18 +412,18 @@ func (r *SREPolicyReconciler) runPrometheusChecks(
 	// Reuse the HTTP client across reconcile cycles to preserve the connection
 	// pool. Only rebuild when the spec (URL / TLS / token) changes.
 	// The original code called NewClient every reconcile, discarding the pool.
-	specKey := fmt.Sprintf("%s|%s|%v", promSpec.PrometheusURL, promSpec.AlertManagerURL, promSpec.InsecureSkipVerify)
+	specKey := fmt.Sprintf("%s|%s|%v", globalPromSpec.PrometheusURL, globalPromSpec.AlertManagerURL, globalPromSpec.InsecureSkipVerify)
 	if r.promClient == nil || r.lastPromConfig != specKey {
 		promCfg := prometheus.Config{
-			PrometheusURL:      promSpec.PrometheusURL,
-			AlertManagerURL:    promSpec.AlertManagerURL,
-			InsecureSkipVerify: promSpec.InsecureSkipVerify,
+			PrometheusURL:      globalPromSpec.PrometheusURL,
+			AlertManagerURL:    globalPromSpec.AlertManagerURL,
+			InsecureSkipVerify: globalPromSpec.InsecureSkipVerify,
 		}
-		if promSpec.BearerTokenSecretRef != nil {
+		if globalPromSpec.BearerTokenSecretRef != nil {
 			promCfg.BearerTokenPath = fmt.Sprintf(
 				"/var/run/secrets/prometheus/%s/%s",
-				promSpec.BearerTokenSecretRef.Name,
-				promSpec.BearerTokenSecretRef.Key,
+				globalPromSpec.BearerTokenSecretRef.Name,
+				globalPromSpec.BearerTokenSecretRef.Key,
 			)
 		}
 		r.promClient = prometheus.NewClient(promCfg, tracer)
@@ -470,6 +499,8 @@ func (r *SREPolicyReconciler) runPrometheusChecks(
 func (r *SREPolicyReconciler) runLogCollection(
 	ctx context.Context,
 	policy *srev1alpha1.SREPolicy,
+	globalConfig *srev1alpha1.SREGlobalConfig,
+	hasGlobalConfig bool,
 	firedTriggers []prometheus.AlertTriggerResult,
 	tracer trace.Tracer,
 ) []srev1alpha1.CheckResult {
@@ -500,46 +531,30 @@ func (r *SREPolicyReconciler) runLogCollection(
 		return nil
 	}
 
-	// Persist log summary to its own ConfigMap
-	if spec.PersistToConfigMap {
-		summary := collection.FormatReport()
-		cm := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      logDiagnosticsConfigMap,
-				Namespace: policy.Namespace,
-				Labels:    map[string]string{"sre.kubevirt.io/component": "log-diagnostics"},
-			},
-			Data: map[string]string{
-				"log-summary.txt": summary,
-				"last-updated":    collection.CollectedAt.Format(time.RFC3339),
-			},
+	// Persist log summary to its own ConfigMap with Rotation
+	summary := collection.FormatReport()
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: logDiagnosticsConfigMap + "-",
+			Namespace:    policy.Namespace,
+			Labels:       map[string]string{"sre.kubevirt.io/component": "log-diagnostics"},
+		},
+		Data: map[string]string{
+			"log-summary.txt": summary,
+			"last-updated":    collection.CollectedAt.Format(time.RFC3339),
+		},
+	}
+	if createErr := r.Create(ctx, cm); createErr != nil {
+		logger.V(1).Info("Failed to create log-diagnostics ConfigMap", "err", createErr)
+	} else {
+		if hasGlobalConfig && globalConfig.Spec.Retention != nil && globalConfig.Spec.Retention.MaxConfigMapCopies > 0 {
+			r.rotateConfigMaps(ctx, policy, "sre.kubevirt.io/component=log-diagnostics", int(globalConfig.Spec.Retention.MaxConfigMapCopies))
 		}
-		existing := &corev1.ConfigMap{}
-		if getErr := r.Get(ctx, client.ObjectKey{Name: cm.Name, Namespace: cm.Namespace}, existing); getErr != nil {
-			if createErr := r.Create(ctx, cm); createErr != nil {
-				logger.V(1).Info("Failed to create log-diagnostics ConfigMap", "err", createErr)
-			}
-		} else {
-			patch := client.MergeFrom(existing.DeepCopy())
-			existing.Data = cm.Data
-			if patchErr := r.Patch(ctx, existing, patch); patchErr != nil {
-				logger.V(1).Info("Failed to patch log-diagnostics ConfigMap", "err", patchErr)
-			}
-		}
-		policy.Status.LogDiagnosticsConfigMap = fmt.Sprintf("%s/%s", policy.Namespace, logDiagnosticsConfigMap)
-		
-		// Attach the summary to the current OpenTelemetry span
-		span := trace.SpanFromContext(ctx)
-		if span.IsRecording() {
-			// Cap the summary length to prevent exceeding OTel attribute limits
-			cappedSummary := summary
-			if len(cappedSummary) > 4000 {
-				cappedSummary = cappedSummary[:4000] + "\n...[truncated for OTel limits]"
-			}
-			span.AddEvent("LogCollectionSummary", trace.WithAttributes(
-				attribute.String("log.summary", cappedSummary),
-			))
-		}
+	}
+
+	// Stream log summary directly to OTLP Endpoint
+	if hasGlobalConfig && globalConfig.Spec.Observability != nil && globalConfig.Spec.Observability.LogsEnabled {
+		r.Telemetry.LogSummary(ctx, summary)
 	}
 
 	return collection.ToCheckResults("log-collection")
@@ -559,11 +574,11 @@ func (r *SREPolicyReconciler) buildRegistry(namespace string, tracer trace.Trace
 
 // ── OTel ──────────────────────────────────────────────────────────────────────
 
-func (r *SREPolicyReconciler) reconcileOTel(ctx context.Context, policy *srev1alpha1.SREPolicy) error {
-	if policy.Spec.OpenTelemetry == nil {
+func (r *SREPolicyReconciler) reconcileOTel(ctx context.Context, globalConfig *srev1alpha1.SREGlobalConfig) error {
+	if globalConfig.Spec.Observability == nil {
 		return nil
 	}
-	provider, err := telemetry.NewProvider(ctx, *policy.Spec.OpenTelemetry)
+	provider, err := telemetry.NewProvider(ctx, globalConfig.Spec.Observability)
 	if err != nil {
 		return err
 	}
@@ -640,6 +655,46 @@ func (r *SREPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+func (r *SREPolicyReconciler) rotateConfigMaps(ctx context.Context, policy *srev1alpha1.SREPolicy, labelSelector string, maxCopies int) {
+	logger := log.FromContext(ctx)
+	
+	// Parse label string "key=value"
+	labels := make(map[string]string)
+	parts := strings.Split(labelSelector, "=")
+	if len(parts) == 2 {
+		labels[parts[0]] = parts[1]
+	}
+
+	cmList := &corev1.ConfigMapList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(policy.Namespace),
+		client.MatchingLabels(labels),
+	}
+	if err := r.List(ctx, cmList, listOpts...); err != nil {
+		logger.Error(err, "Failed to list ConfigMaps for rotation")
+		return
+	}
+
+	if len(cmList.Items) <= maxCopies {
+		return
+	}
+
+	// Sort by CreationTimestamp ascending (oldest first)
+	sort.Slice(cmList.Items, func(i, j int) bool {
+		return cmList.Items[i].CreationTimestamp.Before(&cmList.Items[j].CreationTimestamp)
+	})
+
+	numToDelete := len(cmList.Items) - maxCopies
+	for i := 0; i < numToDelete; i++ {
+		cm := cmList.Items[i]
+		if err := r.Delete(ctx, &cm); err != nil {
+			logger.Error(err, "Failed to delete old ConfigMap", "name", cm.Name)
+		} else {
+			logger.Info("Rotated old ConfigMap", "name", cm.Name)
+		}
+	}
+}
 
 func setCondition(status *srev1alpha1.SREPolicyStatus, condType string, condStatus metav1.ConditionStatus, reason, message string) {
 	now := metav1.Now()

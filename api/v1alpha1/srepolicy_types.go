@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -111,9 +110,11 @@ type LogCollectionSpec struct {
 	ErrorPatterns       []string `json:"errorPatterns,omitempty"`
 }
 
-type OpenTelemetrySpec struct {
-	Enabled  bool   `json:"enabled"`
-	Endpoint string `json:"endpoint"`
+type ObservabilitySpec struct {
+	TracingEnabled bool   `json:"tracingEnabled,omitempty"`
+	MetricsEnabled bool   `json:"metricsEnabled,omitempty"`
+	LogsEnabled    bool   `json:"logsEnabled,omitempty"`
+	OTelEndpoint   string `json:"otelEndpoint,omitempty"`
 }
 
 type OCPClusterSpec struct {
@@ -151,13 +152,9 @@ type MetricQuery struct {
 }
 
 type PrometheusSpec struct {
-	Enabled              bool                  `json:"enabled"`
-	PrometheusURL        string                `json:"prometheusUrl,omitempty"`
-	AlertManagerURL      string                `json:"alertManagerUrl,omitempty"`
-	InsecureSkipVerify   bool                  `json:"insecureSkipVerify,omitempty"`
-	BearerTokenSecretRef *corev1.SecretKeySelector `json:"bearerTokenSecretRef,omitempty"`
-	AlertTriggers        []AlertTrigger        `json:"alertTriggers,omitempty"`
-	MetricQueries        []MetricQuery         `json:"metricQueries,omitempty"`
+	Enabled       bool           `json:"enabled"`
+	AlertTriggers []AlertTrigger `json:"alertTriggers,omitempty"`
+	MetricQueries []MetricQuery  `json:"metricQueries,omitempty"`
 }
 
 type NotificationsSpec struct {
@@ -168,7 +165,6 @@ type SREPolicySpec struct {
 	TargetNamespaces []string           `json:"targetNamespaces,omitempty"`
 	Checks           []CheckSpec        `json:"checks,omitempty"`
 	Paused           bool               `json:"paused,omitempty"`
-	OpenTelemetry    *OpenTelemetrySpec `json:"openTelemetry,omitempty"`
 	OCPCluster       *OCPClusterSpec    `json:"ocpCluster,omitempty"`
 	Prometheus       *PrometheusSpec    `json:"prometheus,omitempty"`
 	LogCollection    *LogCollectionSpec `json:"logCollection,omitempty"`
@@ -217,9 +213,8 @@ type SREPolicyStatus struct {
 	Conditions              []metav1.Condition `json:"conditions,omitempty"`
 	OCPClusterHealthy       *bool              `json:"ocpClusterHealthy,omitempty"`
 	FiringAlertCount        int32              `json:"firingAlertCount,omitempty"`
-	FiringAlertNames        []string           `json:"firingAlertNames,omitempty"`
-	LogDiagnosticsConfigMap string             `json:"logDiagnosticsConfigMap,omitempty"`
-	OtelEndpointReachable   *bool              `json:"otelEndpointReachable,omitempty"`
+	FiringAlertNames               []string           `json:"firingAlertNames,omitempty"`
+	ObservabilityEndpointReachable *bool              `json:"observabilityEndpointReachable,omitempty"`
 }
 
 // +kubebuilder:object:root=true
