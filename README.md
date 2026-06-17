@@ -206,12 +206,10 @@ oc get srepolicies
 
 ---
 
-## ⚠️ Open Issues & Production Readiness
+## 📚 Documentation
 
-The current state of the repository contains the structural foundation and core control loop. The following items must be implemented before the operator is considered fully production-ready:
+For in-depth guides, architectural deep dives, and CRD references, please consult the `docs/` directory:
 
-- **Implement Concrete Checks**: Replace the dummy interfaces in `internal/checks/checks.go` with actual Kubernetes API queries (e.g., querying `VirtualMachineInstance` objects).
-- **Implement Remediation Engine**: Implement the logic in `internal/remediation/remediation.go` to execute actions like Node Drains, VM Restarts, or Live Migrations.
-- **Implement Log Collection**: Wire up the Kubernetes Pod log stream APIs in `internal/diagnostics/logcollector.go` to extract and parse actual pod logs.
-- **RBAC Generation**: Add Kubebuilder RBAC markers (`//+kubebuilder:rbac:groups=...`) to generate `Role` and `ClusterRole` manifests.
-- **Unit and E2E Tests**: Add `envtest` suites and E2E tests validating behavior against a live OpenShift Virtualization environment.
+- **[Production Readiness & Load Analysis](docs/production-guide.md)**: Details on AlertManager scaling, API Server load budgets, and adding new Prometheus triggers.
+- **[SREPolicy CRD Reference](docs/srepolicy-crd.md)**: Deep dive into defining the `SREPolicy` spec.
+- **[Workflows and Actions](docs/workflows-and-actions.md)**: How automated remediations (Drain, Evict, Migrate) execute under the hood.

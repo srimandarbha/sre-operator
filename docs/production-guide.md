@@ -30,7 +30,7 @@
 | Area | Gap | Recommendation |
 |---|---|---|
 | **Tests** | Zero unit or integration tests written | Add table-driven tests for each checker using `fake.NewClientBuilder()`. Add envtest integration test for the reconcile loop. |
-| **DeepCopyObject** | `+kubebuilder:object:root=true` markers present but generated code not committed | Run `make generate manifests` and commit the generated `zz_generated.deepcopy.go` |
+| **DeepCopyObject** | (FIXED) DeepCopy methods implemented | Manually implemented DeepCopy methods in types files to bypass dependencies. |
 | **CRD validation** | `CheckCategory` enum in kubebuilder marker doesn't include `Prometheus`, `OCPCluster`, `Logs` (added as consts, not in the enum tag) | Update the `+kubebuilder:validation:Enum` marker and regenerate CRD |
 | **Secret mounting** | `BearerTokenSecretRef` for Prometheus described in spec but no VolumeMount added to `manager.yaml` | Add projected volume mount in manager Deployment |
 | **RBAC for Prometheus** | No RBAC for accessing the `openshift-monitoring` namespace Thanos/AlertManager routes | Add `Role` in `openshift-monitoring` for the SA, or use a route with the SA token |
